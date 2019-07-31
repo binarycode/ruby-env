@@ -100,7 +100,7 @@ buildah run $build_container sh -c "
 
 # cleanup
 buildah run $build_container sh -c "
-DEBIAN_FRONTEND=noninteractive apt-get -qq purge -y
+DEBIAN_FRONTEND=noninteractive apt-get -qq purge -y \
   build-essential \
   ca-certificates \
   wget
