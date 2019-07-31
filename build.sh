@@ -90,7 +90,7 @@ tar -xzvf ruby-install-$RUBY_INSTALL_VERSION.tar.gz
 
 # prevent documentation generation for gems
 buildah run $build_container sh -c "
-echo 'gem: --no-document' > ~/.gemrc
+echo 'gem: --no-document' > /root/.gemrc
 "
 
 # ruby
@@ -116,5 +116,6 @@ mount=$(buildah mount $container)
 
 cp -r $build_mount/lib/* $mount/lib/
 cp -r $build_mount/usr/* $mount/usr/
+cp $build_mount/root/.gemrc $mount/root/
 
 buildah commit $container $TAG
