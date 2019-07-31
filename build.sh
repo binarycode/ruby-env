@@ -100,6 +100,12 @@ buildah run $build_container sh -c "
 
 # cleanup
 buildah run $build_container sh -c "
+DEBIAN_FRONTEND=noninteractive apt-get -qq purge -y
+  build-essential \
+  ca-certificates \
+  wget
+DEBIAN_FRONTEND=noninteractive apt-get -qq autoremove
+
 rm -rf /usr/local/src
 "
 
@@ -108,7 +114,6 @@ container=$(buildah from $PARENT_IMAGE)
 build_mount=$(buildah mount $build_container)
 mount=$(buildah mount $container)
 
-cp -r $build_mount/etc/* $mount/etc/
 cp -r $build_mount/lib/* $mount/lib/
 cp -r $build_mount/usr/* $mount/usr/
 
