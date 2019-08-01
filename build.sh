@@ -64,19 +64,19 @@ TAG="$DEBIAN_VERSION-$VERSION"
 cleanup() {
   if [ "$build_mount" != "" ]; then
     buildah unmount $build_container || true
-    $build_mount=""
+    build_mount=""
   fi
   if [ "$mount" != "" ]; then
     buildah unmount $container || true
-    $mount=""
+    mount=""
   fi
   if [ "$build_container" != "" ]; then
     buildah rm $build_container || true
-    $build_container=""
+    build_container=""
   fi
   if [ "$container" != "" ]; then
     buildah rm $container || true
-    $container=""
+    container=""
   fi
 }
 
