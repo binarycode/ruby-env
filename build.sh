@@ -3,7 +3,6 @@
 set -e
 
 RUBY_INSTALL_VERSION="0.7.0"
-NAME="ruby-$RUBY_VERSION"
 VERSION="1"
 DEBIAN_VERSION="buster"
 
@@ -58,6 +57,7 @@ then
   exit 1
 fi
 
+NAME="ruby-$RUBY_VERSION"
 PARENT_IMAGE="debian:$DEBIAN_VERSION"
 TAG="$DEBIAN_VERSION-$VERSION"
 
