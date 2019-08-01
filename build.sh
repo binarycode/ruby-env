@@ -2,12 +2,6 @@
 
 set -e
 
-RUBY_INSTALL_VERSION="0.7.0"
-
-VERSION="2"
-
-DEBIAN_VERSION="buster"
-
 while true
 do
   case "$1" in
@@ -53,15 +47,13 @@ then
   exit 1
 fi
 
-if [ -z "$DEBIAN_VERSION" ]
-then
-  echo "DEBIAN_VERSION is empty"
-  exit 1
-fi
+RUBY_INSTALL_VERSION="0.7.0"
 
+PARENT_VERSION=${DEBIAN_VERSION:-buster}
 PARENT_IMAGE="debian:$DEBIAN_VERSION"
 
 NAME="ruby-$RUBY_VERSION"
+VERSION="2"
 TAG="$VERSION-$DEBIAN_VERSION"
 
 cleanup() {
