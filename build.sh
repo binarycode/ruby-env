@@ -3,7 +3,8 @@
 set -e
 
 RUBY_INSTALL_VERSION="0.7.0"
-
+NAME="ruby-$RUBY_VERSION"
+VERSION="1"
 DEBIAN_VERSION="buster"
 
 while true
@@ -58,14 +59,25 @@ then
 fi
 
 PARENT_IMAGE="debian:$DEBIAN_VERSION"
-
-TAG="ruby-$RUBY_VERSION:$DEBIAN_VERSION"
+TAG="$DEBIAN_VERSION-$VERSION"
 
 cleanup() {
-  if [ "$build_mount" != "" ]; then buildah unmount $build_container; fi
-  if [ "$mount" != "" ]; then buildah unmount $container; fi
-  if [ "$build_container" != "" ]; then buildah rm $build_container; fi
-  if [ "$container" != "" ]; then buildah rm $container; fi
+  if [ "$build_mount" != "" ]; then
+    buildah unmount $build_container
+    $build_mount=""
+  fi
+  if [ "$mount" != "" ]; then
+    buildah unmount $container
+    $mount=""
+  fi
+  if [ "$build_container" != "" ]; then
+    buildah rm $build_container
+    $build_container=""
+  fi
+  if [ "$container" != "" ]; then
+    buildah rm $container
+    $container=""
+  fi
 }
 
 trap cleanup EXIT INT TERM
@@ -118,4 +130,5 @@ cp -r $build_mount/lib/* $mount/lib/
 cp -r $build_mount/usr/* $mount/usr/
 cp $build_mount/root/.gemrc $mount/root/
 
-buildah commit $container $TAG
+buildah commit $container $NAME:$TAG
+buildah tag $NAME:$TAG $NAME:latest
