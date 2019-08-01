@@ -3,7 +3,7 @@
 set -e
 
 RUBY_INSTALL_VERSION="0.7.0"
-VERSION="1"
+VERSION="2"
 DEBIAN_VERSION="buster"
 
 while true
