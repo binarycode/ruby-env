@@ -133,4 +133,3 @@ cp -r $build_mount/usr/* $mount/usr/
 cp $build_mount/root/.gemrc $mount/root/
 
 buildah commit $container $NAME:$TAG
-buildah tag $NAME:$TAG $NAME:latest
