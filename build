@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+USAGE='\
+Usage: build [-j] [-t] [-v] RUBY_VERSION
+  -j
+    use debian jessie as parent (buster by default)
+
+  -t
+    show image tag
+
+  -v
+    verbose mode
+'
+
+RUBY_INSTALL_VERSION='0.7.0'
+
+trap cleanup EXIT INT TERM
+
+parse_arguments() {
+  parent_image='buster'
+
+  while getopts 'jtvh' opt; do
+    case "${opt}" in
+      j) parent_image='jessie';;
+      t) show_tag=true;;
+      V) set -xv;;
+      h) echo "${USAGE}" && exit 0;;
+    esac
+  done
+
+  ruby_version=${@:$OPTIND:1}
+}
+
+verify_ruby_version_is_present() {
+  [[ -n "${ruby_version}" ]] && return
+  error 'RUBY_VERSION is empty'
+  exit 1
+}
+
+error() {
+  echo "$@" >&2
+}
+
+generate_tag() {
+  local readonly image_version=$(git describe --tags --abbrev=0 | sed 's/^v//')
+  tag="ruby-${ruby_version}:${image_version}-${parent_image}"
+}
+
+echo_tag_and_exit_if_requested() {
+  [[ -z "${show_tag:-}" ]] && return
+  echo -n "${tag}"
+  exit 0
+}
+
+exit_if_image_exists() {
+  [[ $(buildah images --format='{{.Name}}:{{.Tag}}' | grep "^localhost/${tag}$" | wc -l) -eq 0 ]] && return
+  echo "Image ${tag} is already built"
+  exit 0
+}
+
+create_build_container() {
+  build_container=$(buildah from "${parent_image}")
+}
+
+install_dependencies() {
+  buildah run "${build_container}" bash -c '
+    set -Eeuxo pipefail
+    DEBIAN_FRONTEND=noninteractive apt-get -qq update
+    DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends \
+      build-essential \
+      ca-certificates \
+      wget
+  '
+}
+
+install_ruby_install() {
+  buildah run "${build_container}" bash -c "
+    set -Eeuxo pipefail
+    cd /tmp
+    wget -O ruby-install-${RUBY_INSTALL_VERSION}.tar.gz https://github.com/postmodern/ruby-install/archive/v${RUBY_INSTALL_VERSION}.tar.gz
+    tar -xzvf ruby-install-${RUBY_INSTALL_VERSION}.tar.gz
+  "
+}
+
+prevent_ruby_documentation_generation() {
+  buildah run "${build_container}" bash -c '
+    set -Eeuxo pipefail
+    echo "gem: --no-document" > /root/.gemrc
+  '
+}
+
+install_ruby() {
+  buildah run "${build_container}" bash -c "
+    set -Eeuxo pipefail
+    /tmp/ruby-install-${RUBY_INSTALL_VERSION}/bin/ruby-install --system ruby ${ruby_version} -- --disable-install-doc
+  "
+}
+
+remove_dependencies() {
+  buildah run "${build_container}" bash -c '
+    set -Eeuxo pipefail
+    DEBIAN_FRONTEND=noninteractive apt-get -qq purge -y \
+      build-essential \
+      ca-certificates \
+      wget
+    DEBIAN_FRONTEND=noninteractive apt-get -qq autoremove
+    rm -rf /usr/local/src
+  '
+}
+
+mount_build_container() {
+  build_container_mount=$(buildah mount "${build_container}")
+}
+
+create_main_container() {
+  main_container=$(buildah from "${parent_image}")
+}
+
+mount_main_container() {
+  main_container_mount=$(buildah mount "${main_container_mount}")
+}
+
+copy_ruby() {
+  cp -r "${build_container_mount}/lib/"* "${main_container_mount}/lib/"
+  cp -r "${build_container_mount}/usr/"* "${main_container_mount}/usr/"
+  cp "${build_container_mount}/root/.gemrc" "${main_container_mount}/root/"
+}
+
+unmount_main_container() {
+  unmount_container "${main_container}" "${main_container_mount}"
+  main_container_mount=''
+}
+
+unmount_container() {
+  declare container="$1" mount="$2"
+  [[ -z "${container}" ]] && return
+  [[ -n "${mount}" ]] && buildah unmount "${container}" || true
+}
+
+unmount_build_container() {
+  unmount_container "${build_container}" "${build_container_mount}"
+  build_container_mount=''
+}
+
+remove_build_container() {
+  remove_container "${build_container}"
+  build_container=''
+}
+
+remove_container() {
+  declare container="$1"
+  [[ -n "${container}" ]] && buildah rm "${container}" || true
+}
+
+commit_main_container() {
+  buildah commit "${main_container}" "${tag}"
+}
+
+remove_main_container() {
+  remove_container "${main_container}"
+  main_container=''
+}
+
+cleanup() {
+  build_container="${build_container:-}"
+  build_container_mount="${build_container_mount:-}"
+  unmount_build_container
+  remove_build_container
+  main_container="${main_container:-}"
+  main_container_mount="${main_container_mount:-}"
+  unmount_main_container
+  remove_main_container
+}
+
+main() {
+  parse_arguments "$@"
+  verify_ruby_version_is_present
+  generate_tag
+  echo_tag_and_exit_if_requested
+  exit_if_image_exists
+  create_build_container
+  install_dependencies
+  install_ruby_install
+  prevent_ruby_documentation_generation
+  install_ruby
+  remove_dependencies
+  mount_build_container
+  create_main_container
+  mount_main_container
+  copy_ruby
+  unmount_main_container
+  unmount_build_container
+  remove_build_container
+  commit_main_container
+  remove_main_container
+}
+
+main "$@"
