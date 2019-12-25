@@ -63,10 +63,11 @@ error() {
 }
 
 get_image_name() {
-  local -r ruby_version="$1"
-  local -r debian_version="$2"
+  local -n image="$1"
+  local -r ruby_version="$2"
+  local -r debian_version="$3"
   local -r tag=$(git -C "${WD}" describe --tags --abbrev=0 | sed 's/^v//')
-  echo "ruby-${ruby_version}:${tag}-${debian_version}"
+  image="ruby-${ruby_version}:${tag}-${debian_version}"
 }
 
 echo_image_name_and_exit_if_requested() {
@@ -79,14 +80,20 @@ echo_image_name_and_exit_if_requested() {
 
 exit_if_image_exists() {
   local -r name="$1"
-  [[ $(buildah images --format='{{.Name}}:{{.Tag}}' | grep -c "^localhost/${name}$") -eq 0 ]] && return
+  [[ $(check_image "${name}") -eq 0 ]] && return
   echo "Image ${name} is already built"
   exit 0
 }
 
+check_image() {
+  local -r name="$1"
+  buildah images --format='{{.Name}}:{{.Tag}}' | grep -c "^localhost/${name}$"
+}
+
 create_container() {
-  local -r image="$1"
-  buildah from "${image}"
+  local -n container="$1"
+  local -r image="$2"
+  container=$(buildah from "${image}")
 }
 
 install_dependencies() {
@@ -146,8 +153,9 @@ remove_dependencies() {
 }
 
 mount_container() {
-  local -r container="$1"
-  buildah mount "${container}"
+  local -n mount="$1"
+  local -r container="$2"
+  mount=$(buildah mount "${container}")
 }
 
 copy_ruby() {
@@ -189,18 +197,18 @@ main() {
   local -r ruby_version="${1:-}"
   local -r parent_image="debian:${debian_version}"
   verify_ruby_version_is_present "${ruby_version}"
-  local -r image=$(get_image_name "${ruby_version}" "${debian_version}")
+  get_image_name image "${ruby_version}" "${debian_version}"
   echo_image_name_and_exit_if_requested "${show_image_name}" "${image}"
   exit_if_image_exists "${image}"
-  build_container=$(create_container "${parent_image}")
+  create_container build_container "${parent_image}"
   install_dependencies "${build_container}"
   install_ruby_install "${build_container}" "${RUBY_INSTALL_VERSION}"
   prevent_ruby_documentation_generation "${build_container}"
   install_ruby "${build_container}" "${ruby_version}"
   remove_dependencies "${build_container}"
-  build_container_mount=$(mount_container "${build_container}")
-  main_container=$(create_container "${parent_image}")
-  main_container_mount=$(mount_container "${main_container}")
+  mount_container build_container_mount "${build_container}"
+  create_container main_container "${parent_image}"
+  mount_container main_container_mount "${main_container}"
   copy_ruby "${build_container_mount}" "${main_container_mount}"
   configure_image_metadata "${main_container}" "${image}"
   commit_container "${main_container}" "${image}"
