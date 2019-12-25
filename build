@@ -63,11 +63,11 @@ error() {
 }
 
 get_image_name() {
-  local -n image="$1"
+  local -n name="$1"
   local -r ruby_version="$2"
   local -r debian_version="$3"
   local -r tag=$(git -C "${WD}" describe --tags --abbrev=0 | sed 's/^v//')
-  image="ruby-${ruby_version}:${tag}-${debian_version}"
+  name="ruby-${ruby_version}:${tag}-${debian_version}"
 }
 
 echo_image_name_and_exit_if_requested() {
@@ -197,6 +197,7 @@ main() {
   local -r ruby_version="${1:-}"
   local -r parent_image="debian:${debian_version}"
   verify_ruby_version_is_present "${ruby_version}"
+  local image=''
   get_image_name image "${ruby_version}" "${debian_version}"
   echo_image_name_and_exit_if_requested "${show_image_name}" "${image}"
   exit_if_image_exists "${image}"
