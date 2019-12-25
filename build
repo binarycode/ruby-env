@@ -24,10 +24,10 @@ main_container_mount=''
 trap cleanup EXIT INT TERM
 
 cleanup() {
-  remove_container "${build_container}" || true
   unmount_container "${build_container}" "${build_container_mount}" || true
-  remove_container "${main_container}" || true
+  remove_container "${build_container}" || true
   unmount_container "${main_container}" "${main_container_mount}" || true
+  remove_container "${main_container}" || true
 }
 
 remove_container() {
