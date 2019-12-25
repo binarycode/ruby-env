@@ -62,7 +62,7 @@ error() {
   echo "$@" >&2
 }
 
-generate_image_name() {
+get_image_name() {
   local -r ruby_version="$1"
   local -r debian_version="$2"
   local -r tag=$(git -C "${WD}" describe --tags --abbrev=0 | sed 's/^v//')
