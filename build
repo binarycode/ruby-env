@@ -160,8 +160,9 @@ copy_ruby() {
 
 configure_image_metadata() {
   local -r container="$1"
-  local -r version="$2"
+  local -r image="$2"
   buildah config --author 'Igor Sidorov <igor.sidorov@binarycode.ru>' "${container}"
+  local -r version=$(echo "${image}" | cut -d':' -f2)
   buildah config --label "version=${version}" "${container}"
 }
 
