@@ -30,12 +30,6 @@ cleanup() {
   remove_container "${main_container}" || true
 }
 
-remove_container() {
-  local -r container="$1"
-  [[ -z "${container}" ]] && return
-  buildah rm "${container}"
-}
-
 unmount_container() {
   local -r container="$1"
   local -r mount="$2"
@@ -43,6 +37,12 @@ unmount_container() {
   if [[ -n "${mount}" ]]; then
     buildah unmount "${container}" || true
   fi
+}
+
+remove_container() {
+  local -r container="$1"
+  [[ -z "${container}" ]] && return
+  buildah rm "${container}"
 }
 
 echo_usage_and_exit() {
