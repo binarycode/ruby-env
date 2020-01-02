@@ -3,216 +3,144 @@
 set -Eeuo pipefail
 
 readonly WD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+readonly IMAGE="$(bash "${WD}/image" "$@")"
+readonly IMAGE_VERSION=$(echo -n "${IMAGE}" | cut -d':' -f2)
+
 readonly USAGE='
-Usage: build [-j] [-n] [-v] RUBY_VERSION
+Usage: build [-j] RUBY_VERSION
   -j
     use debian jessie as parent (buster by default)
-
-  -n
-    show image name
-
-  -v
-    verbose mode
 '
 
 readonly RUBY_INSTALL_VERSION='0.7.0'
 
 build_container=''
-build_container_mount=''
+build_mount=''
 main_container=''
-main_container_mount=''
+main_mount=''
 
 trap cleanup EXIT INT TERM
 
 cleanup() {
-  unmount_container "${build_container}" "${build_container_mount}" || true
-  remove_container "${build_container}" || true
-  unmount_container "${main_container}" "${main_container_mount}" || true
-  remove_container "${main_container}" || true
+  echo 'Cleanup...'
+  remove_container "${build_container}" "${build_mount}"
+  remove_container "${main_container}" "${main_mount}"
 }
 
-unmount_container() {
+remove_container() {
   local -r container="$1"
   local -r mount="$2"
   [[ -z "${container}" ]] && return
   if [[ -n "${mount}" ]]; then
     buildah unmount "${container}" || true
   fi
-}
-
-remove_container() {
-  local -r container="$1"
-  [[ -z "${container}" ]] && return
-  buildah rm "${container}"
+  buildah rm "${container}" || true
 }
 
 echo_usage_and_exit() {
   echo "${USAGE}"
-  exit 0
+  exit
 }
 
-verify_ruby_version_is_present() {
+check_ruby_version() {
   local -r version="$1"
   [[ -n "${version}" ]] && return
   error 'RUBY_VERSION is empty'
   exit 1
 }
 
+check_image_presence() {
+  [[ $(buildah images --format='{{.Name}}:{{.Tag}}' | grep -c "^localhost/${IMAGE}$") -eq 0 ]] && return
+  echo "Image ${IMAGE} is already built"
+  exit
+}
+
 error() {
   echo "$@" >&2
 }
 
-get_image_name() {
-  local -n name="$1"
-  local -r ruby_version="$2"
-  local -r debian_version="$3"
-  local -r tag=$(git -C "${WD}" describe --tags --abbrev=0 | sed 's/^v//')
-  name="ruby-${ruby_version}:${tag}-${debian_version}"
-}
-
-echo_image_name_and_exit_if_requested() {
-  local -r requested="$1"
-  local -r name="$2"
-  [[ -z "${requested}" ]] && return
-  echo -n "${name}"
-  exit 0
-}
-
-exit_if_image_exists() {
-  local -r name="$1"
-  [[ $(check_image "${name}") -eq 0 ]] && return
-  echo "Image ${name} is already built"
-  exit 0
-}
-
-check_image() {
-  local -r name="$1"
-  buildah images --format='{{.Name}}:{{.Tag}}' | grep -c "^localhost/${name}$"
-}
-
-create_container() {
+create_and_mount_container() {
   local -n container="$1"
-  local -r image="$2"
+  local -n mount="$2"
+  local -r image="debian:$3"
   container=$(buildah from "${image}")
+  mount=$(buildah mount "${container}")
 }
 
-install_dependencies() {
-  local -r container="$1"
-  # shellcheck disable=SC1004
-  buildah run "${container}" bash -c '
-    set -Eeuxo pipefail
+build_ruby() {
+  local -r ruby_version="$1"
+  local options='set -Eeuo pipefail'
+  [[ -n "${DEBUG:-}" ]] && options='set -Eeuxo pipefail'
+  buildah run "${build_container}" bash -c "
+    ${options}
     DEBIAN_FRONTEND=noninteractive apt-get -qq update
     DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends \
       build-essential \
       ca-certificates \
       wget
-  '
-}
-
-install_ruby_install() {
-  local -r container="$1"
-  local -r version="$2"
-  buildah run "${container}" bash -c "
-    set -Eeuxo pipefail
     cd /tmp
-    wget -O ruby-install-${version}.tar.gz https://github.com/postmodern/ruby-install/archive/v${version}.tar.gz
-    tar -xzvf ruby-install-${version}.tar.gz
-    mv /tmp/ruby-install-${version} /tmp/ruby-install
-  "
-}
-
-prevent_ruby_documentation_generation() {
-  local -r container="$1"
-  buildah run "${container}" bash -c '
-    set -Eeuxo pipefail
-    echo "gem: --no-document" > /root/.gemrc
-  '
-}
-
-install_ruby() {
-  local -r container="$1"
-  local -r version="$2"
-  buildah run "${container}" bash -c "
-    set -Eeuxo pipefail
-    /tmp/ruby-install/bin/ruby-install --system ruby ${version} -- --disable-install-doc
-  "
-}
-
-remove_dependencies() {
-  local -r container="$1"
-  # shellcheck disable=SC1004
-  buildah run "${container}" bash -c '
-    set -Eeuxo pipefail
+    wget -O ruby-install-${RUBY_INSTALL_VERSION}.tar.gz https://github.com/postmodern/ruby-install/archive/v${RUBY_INSTALL_VERSION}.tar.gz
+    tar -xzvf ruby-install-${RUBY_INSTALL_VERSION}.tar.gz
+    mv /tmp/ruby-install-${RUBY_INSTALL_VERSION} /tmp/ruby-install
+    # prevent ruby documentation generation
+    echo 'gem: --no-document' > /root/.gemrc
+    /tmp/ruby-install/bin/ruby-install --system ruby ${ruby_version} -- --disable-install-doc
     DEBIAN_FRONTEND=noninteractive apt-get -qq purge -y \
       build-essential \
       ca-certificates \
       wget
     DEBIAN_FRONTEND=noninteractive apt-get -qq autoremove
     rm -rf /usr/local/src
-  '
-}
-
-mount_container() {
-  local -n mount="$1"
-  local -r container="$2"
-  mount=$(buildah mount "${container}")
+  "
 }
 
 copy_ruby() {
-  local -r from="$1"
-  local -r to="$2"
-  cp -r "${from}/lib/"* "${to}/lib/"
-  cp -r "${from}/usr/"* "${to}/usr/"
-  cp "${from}/root/.gemrc" "${to}/root/"
+  cp -r "${build_mount}/lib/"* "${main_mount}/lib/"
+  cp -r "${build_mount}/usr/"* "${main_mount}/usr/"
+  cp "${build_mount}/root/.gemrc" "${main_mount}/root/"
 }
 
 configure_image_metadata() {
-  local -r container="$1"
-  local -r image="$2"
-  buildah config --author 'Igor Sidorov <igor.sidorov@binarycode.ru>' "${container}"
-  local -r version=$(echo "${image}" | cut -d':' -f2)
-  buildah config --label "version=${version}" "${container}"
+  buildah config --author 'Igor Sidorov <igor.sidorov@binarycode.ru>' "${main_container}"
+  buildah config --label "version=${IMAGE_VERSION}" "${main_container}"
 }
 
 commit_container() {
-  local -r container="$1"
-  local -r name="$2"
-  buildah commit "${container}" "${name}"
+  buildah commit "${main_container}" "${IMAGE}"
 }
 
 main() {
-  local debian_version='buster'
-  local show_image_name=''
+  [[ -n "${DEBUG:-}" ]] && set -x;
 
-  while getopts ':jnv' opt; do
+  local debian_version='buster'
+
+  while getopts ':j' opt; do
     case "${opt}" in
       j) debian_version='jessie';;
-      n) show_image_name=true;;
-      v) set -xv;;
       *) echo_usage_and_exit;;
     esac
   done
   shift "$((OPTIND-1))"
 
   local -r ruby_version="${1:-}"
-  local -r parent_image="debian:${debian_version}"
-  verify_ruby_version_is_present "${ruby_version}"
-  local image=''
-  get_image_name image "${ruby_version}" "${debian_version}"
-  echo_image_name_and_exit_if_requested "${show_image_name}" "${image}"
-  exit_if_image_exists "${image}"
-  create_container build_container "${parent_image}"
-  install_dependencies "${build_container}"
-  install_ruby_install "${build_container}" "${RUBY_INSTALL_VERSION}"
-  prevent_ruby_documentation_generation "${build_container}"
-  install_ruby "${build_container}" "${ruby_version}"
-  remove_dependencies "${build_container}"
-  mount_container build_container_mount "${build_container}"
-  create_container main_container "${parent_image}"
-  mount_container main_container_mount "${main_container}"
-  copy_ruby "${build_container_mount}" "${main_container_mount}"
-  configure_image_metadata "${main_container}" "${image}"
-  commit_container "${main_container}" "${image}"
+  check_ruby_version "${ruby_version}"
+
+  check_image_presence
+
+  echo 'Creating containers...'
+  create_and_mount_container build_container build_mount "${debian_version}"
+  create_and_mount_container main_container main_mount "${debian_version}"
+
+  echo 'Building ruby...'
+  build_ruby "${ruby_version}"
+
+  echo 'Copying ruby...'
+  copy_ruby
+
+  echo 'Creating image...'
+  configure_image_metadata
+  commit_container
 }
 
 main "$@"
