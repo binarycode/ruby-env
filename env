@@ -55,7 +55,7 @@ verify_ruby_version_is_present() {
 }
 
 build_image() {
-  _create_container build_stage1_container "${DEBIAN_VERSION}"
+  _create_container build_stage1_container "debian:${DEBIAN_VERSION}"
 
   _run_in_container "${build_stage1_container}" "
     DEBIAN_FRONTEND=noninteractive apt-get -qq update
@@ -74,7 +74,6 @@ build_image() {
 
       /tmp/ruby-install/bin/ruby-install --system ruby ${RUBY_VERSION} -- --disable-install-doc
 
-      # TODO: check if this reduces stage2 size
       DEBIAN_FRONTEND=noninteractive apt-get -qq purge -y \
         build-essential \
         ca-certificates \
@@ -83,7 +82,7 @@ build_image() {
       rm -rf /usr/local/src
   "
 
-  _create_container build_stage2_container "${DEBIAN_VERSION}"
+  _create_container build_stage2_container "debian:${DEBIAN_VERSION}"
 
   _run_in_unshare "
     stage1_mount=\$(buildah mount \"${build_stage1_container}\")
@@ -127,6 +126,7 @@ main() {
       _image_exists "${IMAGE}" || build_image
       ;;
     image)
+      verify_ruby_version_is_present
       echo "${IMAGE}"
       ;;
     *)
