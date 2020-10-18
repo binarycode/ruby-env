@@ -1,0 +1,260 @@
+#!/usr/bin/env bash
+
+###
+### Ruby environment
+###
+### Usage:
+###
+###   ./env
+###   Launch environment.
+###
+###   ./env build
+###   Build environment image.
+###
+###   ./env image
+###   Display image name.
+###
+### Environment variables:
+###
+###   DEBIAN_VERSION - debian version (buster by default)
+###   DEBUG - enable debug mode (disabled by default)
+###   OPT - application path mounted to /opt (empty by default)
+###   RUBY_VERSION - ruby version
+
+set -Eeuo pipefail
+
+readonly WD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly GIT_TAG="$(git -C "${WD}" describe --tags --abbrev=0 | sed 's/^v//')"
+
+readonly DEBIAN_VERSION="${DEBIAN_VERSION:-buster}"
+readonly RUBY_VERSION="${RUBY_VERSION:-}"
+
+readonly IMAGE_NAME="ruby-env-${RUBY_VERSION}-${DEBIAN_VERSION}"
+readonly IMAGE_VERSION="${GIT_TAG}"
+readonly IMAGE="${IMAGE_NAME}:${IMAGE_VERSION}"
+
+readonly RUBY_INSTALL_VERSION='0.7.1'
+
+readonly POD="${IMAGE_NAME}"
+
+build_stage1_container=""
+build_stage2_container=""
+
+trap cleanup EXIT INT TERM
+
+cleanup() {
+  _remove_container build_stage1_container || true
+  _remove_container build_stage2_container || true
+  _stop_pod "${POD}" || true
+  _remove_pod "${POD}" || true
+}
+
+verify_ruby_version_is_present() {
+  [[ -n "${RUBY_VERSION}" ]] && return
+  _error 'RUBY_VERSION is empty'
+}
+
+build_image() {
+  _create_container build_stage1_container "${DEBIAN_VERSION}"
+
+  _run_in_container "${build_stage1_container}" "
+    DEBIAN_FRONTEND=noninteractive apt-get -qq update
+    DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends \
+      build-essential \
+      ca-certificates \
+      wget
+
+      cd /tmp
+      wget -O ruby-install-${RUBY_INSTALL_VERSION}.tar.gz https://github.com/postmodern/ruby-install/archive/v${RUBY_INSTALL_VERSION}.tar.gz
+      tar -xzvf ruby-install-${RUBY_INSTALL_VERSION}.tar.gz
+      mv /tmp/ruby-install-${RUBY_INSTALL_VERSION} /tmp/ruby-install
+
+      # prevent documentation generation
+      echo 'gem: --no-document' > /root/.gemrc
+
+      /tmp/ruby-install/bin/ruby-install --system ruby ${RUBY_VERSION} -- --disable-install-doc
+
+      # TODO: check if this reduces stage2 size
+      DEBIAN_FRONTEND=noninteractive apt-get -qq purge -y \
+        build-essential \
+        ca-certificates \
+        wget
+      DEBIAN_FRONTEND=noninteractive apt-get -qq autoremove
+      rm -rf /usr/local/src
+  "
+
+  _create_container build_stage2_container "${DEBIAN_VERSION}"
+
+  _run_in_unshare "
+    stage1_mount=\$(buildah mount \"${build_stage1_container}\")
+    stage2_mount=\$(buildah mount \"${build_stage2_container}\")
+
+    cp -r \"\${stage1_mount}/lib/\"* \"\${stage2_mount}/lib/\"
+    cp -r \"\${stage1_mount}/usr/\"* \"\${stage2_mount}/usr/\"
+    cp \"\${stage1_mount}/root/.gemrc\" \"\${stage2_mount}/root/\"
+
+    buildah unmount \"${build_stage1_container}\"
+    buildah unmount \"${build_stage2_container}\"
+  "
+
+  _remove_container build_stage1_container
+
+  _configure_container "${build_stage2_container}" --author 'Igor Sidorov <igor.sidorov@binarycode.ru>'
+  _configure_container "${build_stage2_container}" --label "version=${IMAGE_VERSION}"
+
+  _commit_container "${build_stage2_container}" "${IMAGE}"
+
+  _remove_container build_stage2_container
+}
+
+main() {
+  [[ -n "${DEBUG:-}" ]] && set -x
+
+  local -r cmd=${1:-}
+  shift || true
+
+  case "${cmd}" in
+    "")
+      verify_ruby_version_is_present
+      _stop_pod "${POD}" || true
+      _remove_pod "${POD}" || true
+      _image_exists "${IMAGE}" || build_image
+      _start_pod "${POD}"
+      _start_container "${POD}" "${IMAGE}" "${OPT:-}"
+      ;;
+    build)
+      verify_ruby_version_is_present
+      _image_exists "${IMAGE}" || build_image
+      ;;
+    image)
+      echo "${IMAGE}"
+      ;;
+    *)
+      _display_help_and_exit
+      ;;
+  esac
+}
+
+# utilities
+
+_commit_container() {
+  local -r container="$1"
+  local -r image="$2"
+  buildah commit "${container}" "${image}"
+}
+
+_configure_container() {
+  local -r container="$1"
+  shift
+  buildah config "$@" "${container}"
+}
+
+_create_container() {
+  local -n container="$1"
+  local -r image="$2"
+  container=$(buildah from "${image}")
+}
+
+_display_help_and_exit() {
+  awk -F'### ' '/^###/ { print $2 }' "$0"
+  exit 0
+}
+
+_error() {
+  echo "$@" >&2
+  exit 1
+}
+
+_image_exists() {
+  local -r image="$1"
+  [[ $(buildah images --format='{{.Name}}:{{.Tag}}' | grep -c "^localhost/${image}$") -ne 0 ]]
+}
+
+_pod_exists() {
+  local -r pod="$1"
+  [[ $(podman pod ps --format='{{.Name}}' | grep -c "^${pod}$") -ne 0 ]]
+}
+
+_remove_container() {
+  local -n container="$1"
+  [[ -n "${container}" ]] || return 0
+  buildah rm "${container}"
+  container=''
+}
+
+_remove_pod() {
+  local -r pod="$1"
+  _pod_exists "${pod}" || return 0
+  podman pod rm --force "${pod}"
+}
+
+_run_in_container() {
+  local -r container="$1"
+  local -r commands="$2"
+  local options='set -Eeuo pipefail'
+  [[ -n "${DEBUG:-}" ]] && options='set -Eeuxo pipefail'
+  buildah run "${container}" bash -c "
+    ${options}
+    ${commands}
+  "
+}
+
+_run_in_unshare() {
+  local -r commands="$1"
+  buildah unshare bash -c "${commands}"
+}
+
+_start_container() {
+  local -r pod="$1"
+  local -r image="$2"
+  local -r opt="$3"
+  local -a options
+
+  shift 3
+
+  # enable copy-paste between host and container
+  if [[ -n "${DISPLAY:-}" ]]; then
+    options+=(--env "DISPLAY=${DISPLAY}")
+    options+=(--volume "/tmp/.X11-unix:/tmp/.X11-unix")
+  fi
+
+  # passthrough SSH_AUTH_SOCK to container
+  if [[ -n "${SSH_AUTH_SOCK:-}" ]] && [[ -e "${SSH_AUTH_SOCK}" ]]; then
+    options+=(--env "SSH_AUTH_SOCK=/tmp/ssh-agent")
+    options+=(--volume "${SSH_AUTH_SOCK}:/tmp/ssh-agent")
+  fi
+
+  if [[ -n "${opt:-}" ]]; then
+    options+=(--volume "${opt}:/opt")
+    options+=(--workdir /opt)
+  fi
+
+  podman run \
+    --interactive \
+    --pod "${pod}" \
+    --pull never \
+    --rm \
+    --tty \
+    "${options[@]}" \
+    "$@" \
+    "${image}"
+}
+
+_start_pod() {
+  local -r pod="$1"
+  shift
+  podman pod create --name "${pod}" "$@"
+}
+
+_stop_pod() {
+  local -r pod="$1"
+  _pod_exists "${pod}" || return 0
+  podman pod stop "${pod}"
+}
+
+_update_submodules() {
+  local -r path="$1"
+  git -C "${path}" submodule update --init --recursive
+}
+
+main "$@"
